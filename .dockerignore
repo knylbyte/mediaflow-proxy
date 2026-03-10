@@ -1,6 +1,16 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.git/
+.github/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+tests/
+dist/
+build/
 
 # C extensions
 *.so
@@ -29,7 +39,12 @@ MANIFEST
 .env
 .venv/
 .idea/
+.vscode/
 *.service
+docker-compose.yml
+docker-compose.portainer
+heroku.yml
+Makefile
 
 # Ignore all files under drm folder
 mediaflow_proxy/drm/*

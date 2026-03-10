@@ -1,10 +1,26 @@
-# Stage 1: Build stage with all compilation dependencies
-FROM python:3.14-slim AS builder
+# syntax=docker/dockerfile:1.7
 
-# Set work directory
+ARG PYTHON_VERSION=3.14
+
+FROM python:${PYTHON_VERSION}-slim AS build-base
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_PROJECT_ENVIRONMENT=/build/.venv
+
 WORKDIR /build
 
-# Install build dependencies required for compiling packages
+RUN python -m pip install --no-cache-dir build uv
+
+COPY pyproject.toml uv.lock README.md LICENSE /build/
+
+FROM build-base AS deps-wheel
+
+RUN uv sync --frozen --no-install-project --no-dev
+
+FROM build-base AS deps-native
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
@@ -24,58 +40,48 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Add Rust to PATH
-ENV PATH="/root/.cargo/bin:$PATH"
+ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Install uv without relying on a platform-specific external stage
-RUN pip install --no-cache-dir uv
-
-# Copy only requirements to cache them in docker layer
-COPY pyproject.toml uv.lock* /build/
-
-# Install dependencies into a virtual environment
 RUN uv sync --frozen --no-install-project --no-dev
 
-# Stage 2: Runtime stage (minimal image)
-FROM python:3.14-slim
+FROM deps-wheel AS builder-wheel
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE="1"
-ENV PYTHONUNBUFFERED="1"
-ENV PORT="8888"
+COPY mediaflow_proxy /build/mediaflow_proxy
 
-# Install only runtime dependencies (no dev packages)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    libffi8 \
-    libxml2 \
-    libxslt1.1 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+RUN python -m build --wheel --outdir /dist \
+    && uv pip install --python /build/.venv/bin/python --no-deps /dist/*.whl
 
-# Create a non-root user
+FROM deps-native AS builder-native
+
+COPY mediaflow_proxy /build/mediaflow_proxy
+
+RUN python -m build --wheel --outdir /dist \
+    && uv pip install --python /build/.venv/bin/python --no-deps /dist/*.whl
+
+FROM builder-wheel AS builder-amd64
+FROM builder-wheel AS builder-arm64
+FROM builder-native AS builder-arm
+
+ARG TARGETARCH
+FROM builder-${TARGETARCH} AS builder
+
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PORT=8888 \
+    WEB_CONCURRENCY=1
+
 RUN useradd -m -u 1000 mediaflow_proxy
 
-# Set work directory
 WORKDIR /mediaflow_proxy
 
-# Copy virtual environment from builder stage
-COPY --from=builder /build/.venv /mediaflow_proxy/.venv
+COPY --from=builder --chown=mediaflow_proxy:mediaflow_proxy /build/.venv /mediaflow_proxy/.venv
 
-# Copy project files
-COPY --chown=mediaflow_proxy:mediaflow_proxy . /mediaflow_proxy
-
-# Set ownership
-RUN chown -R mediaflow_proxy:mediaflow_proxy /mediaflow_proxy
-
-# Switch to non-root user
 USER mediaflow_proxy
 
-# Set up the PATH to include the virtual environment
-ENV PATH="/mediaflow_proxy/.venv/bin:$PATH"
+ENV PATH="/mediaflow_proxy/.venv/bin:${PATH}"
 
-# Expose the port the app runs on
 EXPOSE 8888
 
-# Run the application with Gunicorn (use python -m to avoid venv path issues)
-CMD ["sh", "-c", "exec python -m gunicorn mediaflow_proxy.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8888 --timeout 120 --max-requests 500 --max-requests-jitter 200 --access-logfile - --error-logfile - --log-level info --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]
+CMD ["sh", "-c", "exec python -m gunicorn mediaflow_proxy.main:app -w \"${WEB_CONCURRENCY:-1}\" -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8888} --timeout 120 --max-requests 500 --max-requests-jitter 200 --access-logfile - --error-logfile - --log-level info --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]

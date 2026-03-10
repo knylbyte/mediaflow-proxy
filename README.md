@@ -185,15 +185,16 @@ Set the following environment variables:
 - `DASH_PREBUFFER_INACTIVITY_TIMEOUT`: Optional. Seconds of inactivity before cleaning up DASH stream state. Default: `60`. Helps clean up resources when streams are stopped.
 - `DASH_SEGMENT_CACHE_TTL`: Optional. TTL in seconds for cached DASH segments. Default: `60`. Longer values help with slow network playback.
 - `FORWARDED_ALLOW_IPS`: Optional. Controls which IP addresses are trusted to provide forwarded headers (X-Forwarded-For, X-Forwarded-Proto, etc.) when MediaFlow Proxy is deployed behind reverse proxies or load balancers. Default: `127.0.0.1`. See [Forwarded Headers Configuration](#forwarded-headers-configuration) for detailed usage.
+- `WEB_CONCURRENCY`: Optional. Number of Gunicorn workers used by the Docker image. Default: `1`. Increase this only when the container has enough CPU/RAM available; pair multi-worker deployments with `REDIS_URL` for shared coordination and caching.
 
 ### Redis Configuration (Optional)
 
-Redis enables cross-worker coordination for rate limiting and caching. This is **recommended** when running with multiple workers (`--workers N`) to prevent CDN rate-limiting issues (e.g., Vidoza 509 errors).
+Redis enables cross-worker coordination for rate limiting and caching. This is **recommended** when running with multiple workers (`WEB_CONCURRENCY > 1` in Docker, or `--workers N` when running uvicorn directly) to prevent CDN rate-limiting issues (e.g., Vidoza 509 errors).
 
 - `REDIS_URL`: Optional. Redis connection URL. Default: `None` (disabled). Example: `redis://localhost:6379` or `redis://user:pass@host:6379/0`.
 
 **When to use Redis:**
-- Running multiple uvicorn workers (`--workers 4` or more)
+- Running multiple workers in Docker (`WEB_CONCURRENCY > 1`) or uvicorn (`--workers N`)
 - Streaming from rate-limited CDNs like Vidoza
 - Need shared caching across workers (extractor results, HEAD responses, segments)
 
@@ -965,6 +966,8 @@ MediaFlow Proxy now includes a built-in speed test feature for testing RealDebri
    ```
    docker run -p 8888:8888 -e API_PASSWORD=your_password mhdzumair/mediaflow-proxy
    ```
+
+   The Docker image defaults to `WEB_CONCURRENCY=1` to reduce idle memory usage. Increase it only when you need more parallelism and have Redis configured for cross-worker caching.
 ### Using Docker Compose
 
 1. Set the `API_PASSWORD` and other environment variables in `.env`:
@@ -1047,6 +1050,11 @@ MediaFlow Proxy now includes a built-in speed test feature for testing RealDebri
 2. Run the Docker container:
    ```
    docker run -d -p 8888:8888 -e API_PASSWORD=your_password --restart unless-stopped --name mediaflow-proxy mediaflow-proxy
+   ```
+
+   For low-memory hosts, keep the default `WEB_CONCURRENCY=1`. To increase parallelism explicitly:
+   ```
+   docker run -d -p 8888:8888 -e API_PASSWORD=your_password -e WEB_CONCURRENCY=2 --restart unless-stopped --name mediaflow-proxy mediaflow-proxy
    ```
 
 ### Option 2: Premium Hosted Service (ElfHosted)
